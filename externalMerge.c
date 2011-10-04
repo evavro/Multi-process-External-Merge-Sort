@@ -1,10 +1,3 @@
-// Take in multiple unsorted files
-// Produce a single sorted file
-// ^^ Essentially an ordered aggregation of files
-// Sort each file individually, then do a master merge
-// pipe sorted lists from child processes to their parent processes so that they can be merged
-// create a logging system
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <iostream>
@@ -18,25 +11,42 @@
 #include <sys/wait.h>
 #include <sys/resource.h>
 #include <errno.h>
+#include <pthread.h>
 
 #define READ 0 
 #define WRITE 1 
 #define MAX 1024
 
-void updateStatus(const char*);
+void pipeFunction(void *);
+
+//void setupProcesses();
 void forkParentMergers();
-void createParentMergeProcesses();
-void createLeafChildSortProcesses();
+void forkChildSorter();
+void spawnChildSortThread();
 void parentMergeProcess();
 void leafChildMergeProcess(); // wait on the child processes
+void updateStatus(const char*);
 
 void readFile(const char*);
 void sigHandler(int);
 
 using namespace std;
 
-map<char*, vector<int> > fileDataMap;
+/*struct parsed_int_file {
+	char * filename;
+	vector<int> ints;
+};
+
+vector<parsed_int_file> ints;*/
+
+vector<const char*> files;
+
+//map<char*, vector<int> > fileDataMap;
+
 int fileCount = 0;
+
+const int PIPE_BUF = 256;
+const int THREADS = 2;
 
 int main(int argc, char *argv[]) {
 	// Handle interrupts
@@ -55,12 +65,18 @@ int main(int argc, char *argv[]) {
 			
 			getline (cin, filename);
 			
-			readFile(filename.c_str());
+			files.push_back(filename.c_str());
+			
+			//Move this to childSorter, the file should only be parsed then
+			//readFile(filename.c_str());
 		}
 	} else if(argc > 1) {
 		for(int i = 1; i < argc; i++)
 			readFile(argv[i]);
 	}
+	
+	//setupProcesses();
+	forkParentMergers();
 }
 
 void readFile(const char* filename) {
@@ -75,7 +91,6 @@ void readFile(const char* filename) {
 		cout << "Loading file " << filename << "\n\n";
 		
 		// This keeps adding the last number in a file twice for some stupid reason
-		// look up sstream for the easiest data conversion ever
 		while (!fstream.eof()) {
 			fstream >> output;
 			
@@ -87,86 +102,133 @@ void readFile(const char* filename) {
 		fileCount++;
 		
 		fstream.close();
-		
-		forkParentMergers();
 	} else {
 		cout << "Could not load file " << filename << "." << endl;
 	}
 }
 
-void forkParentMergers() {
-	// spawn 2 internal parent processes
-	// the parent processes should each spawn 2 "leaf-node" child processes
-	// the child processes should each input and sort a file
-	// the child processes should then send their sorted values via a pipe to their parent process
-	// the parent processes should simply merge (not re-sort) the incoming values
-	// the parent processes should send their sorted values via a pipe to the Master process, which merges them and outputs the final sorted file
-	
-	int parentProcessCount = (fileCount == 1 ? 2 : fileCount) / 2;
-	int childProcessCount = fileCount;
-	
+// parses a specific function and waits for the response to come back
+// under construction
+/*char * pipeFunction(void (* func)(int)) {
 	int parent_id, status;
 	
-	cout << "Forking " << parentProcessCount << " parent merger processes" << endl;
-    
-    for(int i = 0; i < parentProcessCount; i++) 
-    {
-		// Create pipe to parent merger
-		int pipefd[2];
-		const int BSIZE = 256;
-		char buf[BSIZE];
-		
-		status = pipe(pipefd); 
+	int pipefd[2];
+	const int& PIPE_READ = pipefd[0];
+	const int& PIPE_WRITE = pipefd[1];
+	const int BSIZE = 256;
+	char buf[BSIZE];
 	
-		// Create a parent process fork that handles 2 file merges
+	status = pipe(pipefd);
+	
+	// Create a parent process fork that handles 2 file merges
+	parent_id = fork();
+		
+	// Fork parent fails
+	if(parent_id < 0) {
+		perror("Unable to fork parent merge process\n");
+	}
+		
+	// Main controller
+	else if(parent_id)
+	{
+		read(PIPE_READ, buf, BSIZE);
+
+		cout << "pipeFunction: Received message from pipe: " << buf << endl;
+	}
+		
+	// Parent merger process
+	else if(!parent_id)
+	{
+		close(PIPE_READ);
+		
+		(*func);
+
+		write(PIPE_WRITE, "Sorted ints from child process", BSIZE);  
+
+		close(PIPE_WRITE);
+
+		exit(0);
+	}
+	
+	return NULL;
+}*/
+
+//void setupProcesses() {
+void forkParentMergers() {
+	/* the child processes should each input and sort a file
+	   the child processes should then send their sorted values via a pipe to their parent process
+	   the parent processes should simply merge (not re-sort) the incoming values
+	   the parent processes should send their sorted values via a pipe to the Master process, which merges them and outputs the final sorted file */
+	
+	int parentProcessCount = (fileCount % 2 == 0 ? fileCount : fileCount + 1) / 2; 
+	int childProcessCount = fileCount;	
+	
+	int pipefd[parentProcessCount][2]; // This should maybe be moved to inside the loop
+	char buf[PIPE_BUF];
+	
+	cout << "Forking " << parentProcessCount << " parent merger processe(s)" << endl;
+    
+    for(int i = 0; i < parentProcessCount; i++) {
+		int parent_id, status;
+		
+		// This loop may be blocked by the piping stuff
+		const int& PIPE_READ = pipefd[i][0];
+		const int& PIPE_WRITE = pipefd[i][1];
+		
+		status = pipe(pipefd[i]); 
+	
 		parent_id = fork();
 		
-		// Fork parent fails
 		if(parent_id < 0) {
 			perror("Unable to fork parent merge process\n");
 		}
-		
+			
 		// Main controller
 		else if(parent_id)
 		{
-			printf("Spawned parent: ID# %i\n", parent_id);
+			cout << "Spawned parent merger process: ID# " << parent_id << endl;
+				
+			read(PIPE_READ, buf, PIPE_BUF);
 
-			// NOTE: May not be a bad idea to have the parent sorters as a separate executable (execv)
-			//parent_id = wait(&status);
-			
-			read(pipefd[0], buf, BSIZE);
-			
-			// TODO: Create a "ParsedSortFile" object so that we can pass the object through a stream easily and print it in cout using operands
-			//for(int i = 0; i < sizeof(indata); i++)
-				//cout << indata[i] << endl;
-			
-			cout << "After wait: " << buf << endl;
+			cout << "Received message from pipe: " << buf << endl;
 		}
-		
+			
 		// Parent merger process
 		else if(!parent_id)
 		{
-			// close unused end of pipe because this process only needs to write
-			close(pipefd[0]);
-			
-			//int test[] = {10, 20, 30, 40};
-			
-			//createLeafChildSortProcesses
-			write(pipefd[1], "test message", BSIZE);  
-			
-			close(pipefd[1]);
-			
+			close(PIPE_READ);
+
+			write(PIPE_WRITE, "1,2,3,4,5,6,7,10", PIPE_BUF);  
+
+			close(PIPE_WRITE);
+
 			exit(0);
 		}
 	}
 }
 
-void createParentMergeProcesses() {
-	cout << "Parent merge process" << endl;
+void forkChildSorter() {
+	char * sortedResults;
 }
 
-void createLeafChildSortProcesses() {
-	cout << "Child sort process created" << endl;
+/*vector<int> merge(const vector<int> list1, const vector<int> list2) {
+	
+}*/
+
+void spawnChildSortThread() {
+	// http://randu.org/tutorials/threads/
+	/*phread_t thread[THREADS];
+	char *sorted = "";
+	int t_create;*/
+}
+
+// I need to use a global variable, probably should create a MergeSort class
+void mergeSort(int[] nums) {
+	
+}
+
+void merge(int left, int right) {
+    
 }
 
 void sigHandler(int sig) {
