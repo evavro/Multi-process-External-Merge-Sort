@@ -279,7 +279,6 @@ void forkChildSorters(const int & PARENT_PIPE_WRITE, vector<const char *> & file
 void leafChildSortProcess(const int & PIPE_WRITE, const char * filename) {
 	cout << "Created child sort process #" << getpid() << endl;
 
-	//readFile(popFile(), sorted);
 	readFile(filename, sorted);
 	
 	if(PIPE_WRITE) {
