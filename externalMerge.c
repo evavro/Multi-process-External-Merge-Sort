@@ -1,3 +1,10 @@
+/* External Merge Sort
+ * Uses the merge sort algorithm to sort files containing integers.
+ * Fully itilizes parallel processing and pipes.
+ * 
+ * By: Erik Vavro
+*/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <iostream>
