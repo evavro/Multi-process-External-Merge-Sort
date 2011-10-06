@@ -5,18 +5,14 @@
 #include <sstream>
 #include <fstream>
 #include <vector>
-#include <map>
 #include <utility>
 #include <unistd.h>
 #include <sys/wait.h>
-#include <sys/resource.h>
 #include <errno.h>
-#include <pthread.h>
 
 using namespace std;
 
 void forkParentMergers();
-//void forkChildSorters(const int &);
 void forkChildSorters(const int &, vector<const char *> &);
 void leafChildSortProcess(const int &, const char * filename);
 
@@ -235,7 +231,7 @@ void forkChildSorters(const int & PARENT_PIPE_WRITE, vector<const char *> & file
 		
 	// Fork children sorter processes
 	for (int i = 0; i < child_count; ++i) {
-			
+		// Pop the latest file to process	
 		const char * file = files_to_process[files_to_process.size() - 1];
 		files_to_process.pop_back();
 		
