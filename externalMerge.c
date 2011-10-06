@@ -16,8 +16,9 @@
 using namespace std;
 
 void forkParentMergers();
-void forkChildSorters(const int &);
-void leafChildSortProcess(const int &);
+//void forkChildSorters(const int &);
+void forkChildSorters(const int &, vector<const char *> &);
+void leafChildSortProcess(const int &, const char * filename);
 
 const char * popFile();
 void readFile(const char *, vector<int> &);
@@ -35,17 +36,15 @@ void sigHandler(int);
 vector<const char*> files;
 vector<int> sorted;
 
-const int PIPE_BUF = 256;
-const int THREADS = 2;
+#define PIPE_BUF 256
 
 int main(int argc, char *argv[]) {
-	
 	// Handle interrupts
 	signal (SIGINT, sigHandler);
 	
 	string filename;
 	
-	cout << "Welcome to my multi-process, multi-threaded and parallel external merge sort\nBy: Erik Vavro\n" << endl;
+	cout << "Welcome to my parallel multi-process external merge sort\nBy: Erik Vavro\n" << endl;
 	
 	// This way we can handle argument values AND individually typed in files
 	if(argc > 1) {
@@ -136,9 +135,12 @@ const char * popFile() {
 	return filename;
 }
 
-// Forks off and controls enough parents to have at most 2 child processes
+// Forks off and manages enough parents to have at most 2 child processes
 void forkParentMergers() {
 	int file_count = files.size();
+	vector<const char*> files_to_process;
+	
+	// Create 1 parent for every 2 children (2 parents for 3 children, etc)
 	int parent_process_count = (file_count % 2 == 0 ? file_count : file_count + 1) / 2;
 	
 	// Create pipes
@@ -154,16 +156,25 @@ void forkParentMergers() {
 		pipe(pipefds[i]);
 
 	// Create parent merger processes
-	for(int i = 0; i < parent_process_count; i++) {	
+	for(int i = 0; i < parent_process_count; i++) {		
+		// Determine how many files our current child needs to process (at most 2)
+		int to_process = files.size() > 1 ? 2 : 1;
+
+		// Get the list of files for this parent to process by popping them
+		for(int f = 0; f < to_process; f++)
+			files_to_process.push_back(popFile());
+		
 		if ((p_pids[i] = fork()) < 0) {
 			perror("Could not fork parent process");
 		} else if (p_pids[i] == 0) {
 			cout << "Forked parent merger process #" << getpid() << endl;
 			
-			forkChildSorters(pipefds[i][1]);
+			forkChildSorters(pipefds[i][1], files_to_process);
 					
 			exit(0);
 		}
+		
+		files_to_process.clear();
 			
 		close(pipefds[i][1]); // close write-end of pipe
 	}
@@ -204,11 +215,13 @@ void forkParentMergers() {
 	saveSortedFile(sorted_parents);
 }
 
-// Forks off and controls at most 2 children sorting processes.
-void forkChildSorters(const int & PARENT_PIPE_WRITE) {
+// Forks off and manages at most 2 children sorting processes.
+// TAKE IN AN ARRAY OF FILES
+//void forkChildSorters(const int & PARENT_PIPE_WRITE) {
+void forkChildSorters(const int & PARENT_PIPE_WRITE, vector<const char *> & files_to_process) {
 	
 	// If there are at least 2 more files to parse, then count 2. Otherwise, only 1 remains
-	int child_count = files.size() > 1 ? 2 : 1;
+	int child_count = files_to_process.size() > 1 ? 2 : 1;
 	
 	pid_t c_pids[child_count];
 	
@@ -219,13 +232,17 @@ void forkChildSorters(const int & PARENT_PIPE_WRITE) {
 	// Establish pipes
 	for(int i = 0; i < child_count; i++)
 		pipe(pipefds[i]);
-
+		
 	// Fork children sorter processes
 	for (int i = 0; i < child_count; ++i) {
+			
+		const char * file = files_to_process[files_to_process.size() - 1];
+		files_to_process.pop_back();
+		
 		if ((c_pids[i] = fork()) < 0) {
 			perror("Could not fork child process");
 		} else if (c_pids[i] == 0) {
-			leafChildSortProcess(pipefds[i][1]);
+			leafChildSortProcess(pipefds[i][1], file);
 				
 			exit(0);
 		}
@@ -264,10 +281,11 @@ void forkChildSorters(const int & PARENT_PIPE_WRITE) {
 }
 
 // Process that opens a file, parses it, sorts it, and sends the result up to a respective parent process.
-void leafChildSortProcess(const int & PIPE_WRITE) {
+void leafChildSortProcess(const int & PIPE_WRITE, const char * filename) {
 	cout << "Created child sort process #" << getpid() << endl;
 
-	readFile(popFile(), sorted);
+	//readFile(popFile(), sorted);
+	readFile(filename, sorted);
 	
 	if(PIPE_WRITE) {
 		if(sorted.size() > 0) {
