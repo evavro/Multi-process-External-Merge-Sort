@@ -13,43 +13,27 @@
 #include <errno.h>
 #include <pthread.h>
 
-#define READ 0 
-#define WRITE 1 
-#define MAX 1024
-
 using namespace std;
 
-void pipeFunction(void *);
-
-void masterMergeController();
-void forkSubProcessesByType(int, int, const int *);
-void forkParentMergers(const int &);
-void forkChildSorter(const int &);
-void forkParentMergers(const int *);
-void forkChildSorter(const int *);
-//void parentMergeProcess();
-//void leafChildMergeProcess(); // wait on the child processes
-//void spawnChildSortThread();
-void updateStatus(const char*);
+void forkParentMergers();
+void forkChildSorters(const int &);
+void leafChildSortProcess(const int &);
 
 const char * popFile();
-void readFile(const char*, vector<int> &);
-//vector<int> readFile(const char*);
+void readFile(const char *, vector<int> &);
+bool doesFileExist(const char *);
+void saveSortedFile(vector<int> &);
 
 vector<int> & mergeSort(vector<int> &);
 void merge(vector<int> &, vector<int> &, vector <int> &);
 const char * sortedToChars(vector<int> &);
 vector<int> charsToSorted(const char *);
 
-void mergeCopyNoDupes(vector<int> &, vector<int> &);
-
 void sigHandler(int);
 
 vector<const char*> files;
 vector<int> sorted;
 
-const int SUB_PARENT_MERGE = 0;
-const int SUB_CHILD_SORT = 1;
 const int PIPE_BUF = 256;
 const int THREADS = 2;
 
@@ -66,23 +50,35 @@ int main(int argc, char *argv[]) {
 		cout << endl << "Type in files one at a time" << endl;
 		
 		while(1) {
-			cout << "Enter filename (.int): ";
+			cout << "Enter filename (plain text files): ";
 			
 			getline(cin, filename);
 			
-			files.push_back(filename.c_str());
+			if(doesFileExist(filename.c_str())) {
+				files.push_back(filename.c_str());
+			} else {
+				perror(filename.c_str());
+			}
 		}
 	} else if(argc > 1) {
 		
-		// Log the files we need
-		for(int i = 1; i < argc; i++)
-			files.push_back(argv[i]);
+		// Log the files we need if they exist.
+		for(int i = 1; i < argc; i++) {
+			if(doesFileExist(argv[i])) {
+				files.push_back(argv[i]);
+			} else {
+				perror(argv[i]);
+				
+				exit(0);
+			}
+		}
 	}
 	
-	// Main sorting and process controller
-	masterMergeController();
+	// Main sorting and process controller, starts creating process tree
+	forkParentMergers();
 }
 
+// Read in a file and parse the integers within
 void readFile(const char* filename, vector<int> & numbers) {
 	ifstream fstream;
 	char output[15]; // support up to a 15 digit integer
@@ -91,13 +87,14 @@ void readFile(const char* filename, vector<int> & numbers) {
 	fstream.open(filename);
 	
 	if (fstream.is_open()) {
-		cout << "Loading file " << filename << endl;
+		cout << "Loading and sorting file " << filename << " in child #" << getpid() << endl;
 		
 		while (!fstream.eof()) {
 			fstream >> output;
 			
 			currentInt = atoi(output);
 			
+			// Add the number on each line to the vector
 			numbers.push_back(currentInt);
 		}
 		
@@ -105,12 +102,40 @@ void readFile(const char* filename, vector<int> & numbers) {
 		numbers.pop_back();
 		fstream.close();
 	} else {
-		cout << "Could not load file " << filename << "." << endl;
+		perror(filename);
 	}
 }
 
-// This is a grandfather process
-void masterMergeController() {
+// Determines if a file exists at the given path
+bool doesFileExist(const char * filename) {
+	ifstream ifile(filename);
+	
+	return ifile;
+}
+
+// Saves a merged sorted list to a new file
+void saveSortedFile(vector<int> & numbers) {
+	const char * filename = "merged.txt";
+	fstream file;
+
+	file.open(filename, ios::out);
+
+	if(file.is_open()) {
+		// Add a number from the sorted list on a line
+		for(unsigned int i = 0; i < numbers.size(); i++)
+			file << numbers[i] << endl;
+	} else {
+		perror(filename);
+	}
+		
+	file.close();
+	
+	cout << "Saved aggregated sort file as " << filename << endl;
+}
+
+
+// Forks off and controls enough parents to have at most 2 child processes
+void forkParentMergers() {
 	int file_count = files.size();
 	int parent_process_count = (file_count % 2 == 0 ? file_count : file_count + 1) / 2;
 	
@@ -120,8 +145,9 @@ void masterMergeController() {
 	
 	pid_t p_pids[parent_process_count];
 	
-	cout << "Forking " << parent_process_count << " parent merger processe(s)" << endl;
+	cout << "Forking " << parent_process_count << " parent merger processe(s) from master process #" << getpid() << endl;
 	
+	// Establish pipes
 	for(int i = 0; i < parent_process_count; i++)
 		pipe(pipefds[i]);
 
@@ -130,7 +156,9 @@ void masterMergeController() {
 		if ((p_pids[i] = fork()) < 0) {
 			perror("Could not fork parent process");
 		} else if (p_pids[i] == 0) {
-			forkParentMergers(pipefds[i][1]);
+			cout << "Forked parent merger process #" << getpid() << endl;
+			
+			forkChildSorters(pipefds[i][1]);
 					
 			exit(0);
 		}
@@ -151,6 +179,7 @@ void masterMergeController() {
 	string sorted_parents_s;
 	vector<int> sorted_parents;
 	
+	// Read in parent pipes and merge their results
 	for(int i = 0; i < parent_process_count; i++) {
 		read(pipefds[i][0], buf[i], PIPE_BUF);
 		
@@ -161,22 +190,26 @@ void masterMergeController() {
 		mergeSort(sorted_parents);
 	}
 
-	cout << "Master controller process #" << getpid() << " received sorted results from all " << parent_process_count << " parent processes " << endl;
+	// Final point in the sort process. Could have this in the super-function call, but that would require tossing around more variables
+	cout << "Master process #" << getpid() << " received sorted results from all " << parent_process_count << " parent processes " << endl;
 	
-	cout << "Got messages from all pipes, everything should be completely sorted at this point\nFinal result: " << sortedToChars(sorted_parents) << endl;
+	cout << "Recieved messages from all pipes, everything should be completely sorted and merged at this point:\n" << sortedToChars(sorted_parents) << endl;
+	
+	saveSortedFile(sorted_parents);
 }
 
-// can maybe just pass a reference to the master pipe like in forkChildSort
-// turn this into a generic pipeWithChild() method that calls a specified function so that we don't have so much duplicate code
-void forkParentMergers(const int & MASTER_PIPE_WRITE) {
-	int parent_id;
-	int child_count = (files.size() > 1 ? 2 : 1);
+// Forks off and controls at most 2 children sorting processes.
+void forkChildSorters(const int & PARENT_PIPE_WRITE) {
+	// If there are at least 2 more files to parse, then count 2. Otherwise, only 1 remains
+	int child_count = files.size() > 1 ? 2 : 1;
 	
 	pid_t c_pids[child_count];
 	
+	// Create pipes
 	int pipefds[child_count][2];
 	char buf[child_count][PIPE_BUF];
 
+	// Establish pipes
 	for(int i = 0; i < child_count; i++)
 		pipe(pipefds[i]);
 
@@ -185,7 +218,7 @@ void forkParentMergers(const int & MASTER_PIPE_WRITE) {
 		if ((c_pids[i] = fork()) < 0) {
 			perror("Could not fork child process");
 		} else if (c_pids[i] == 0) {
-			forkChildSorter(pipefds[i][1]);
+			leafChildSortProcess(pipefds[i][1]);
 				
 			exit(0);
 		}
@@ -206,27 +239,26 @@ void forkParentMergers(const int & MASTER_PIPE_WRITE) {
 	string sorted_children_s;
 	vector<int> sorted_children;
 	
+	// Read in child pipes and merge their results
 	for(int i = 0; i < child_count; i++) {
 		read(pipefds[i][0], buf[i], PIPE_BUF);
 		
-		cout << "Parent #" << getpid() << " received a result from child process:\n" << buf[i] << endl;
+		cout << "Parent #" << getpid() << " received a result from child process" << endl;
 	
-		// Combine sorted results
+		// Merge and results
 		sorted_children_s += buf[i];
 		sorted_children = charsToSorted(sorted_children_s.c_str());
-		
-		mergeSort(sorted_children);
 	}
 	
-	cout << "Parent #" << getpid() << " merged and sorted results from all child processes! " << sortedToChars(sorted_children) << endl;
+	cout << "Parent #" << getpid() << " merged results from all child processes\n" << sorted_children_s << endl;
 		
-	write(MASTER_PIPE_WRITE, sortedToChars(sorted_children), PIPE_BUF);
+	write(PARENT_PIPE_WRITE, sortedToChars(sorted_children), PIPE_BUF);
 	
 	// CREATE closePipe(const * int) method
 }
 
-void forkChildSorter(const int & PIPE_WRITE) {
-	cout << "Created child sort process ID #" << getpid() << endl;
+void leafChildSortProcess(const int & PIPE_WRITE) {
+	cout << "Created child sort process #" << getpid() << endl;
 
 	readFile(popFile(), sorted);
 	
@@ -234,8 +266,6 @@ void forkChildSorter(const int & PIPE_WRITE) {
 		if(sorted.size() > 0) {
 			mergeSort(sorted);
 			
-			//cout << "Writing output up pipe stream to parent from Child #" << getpid() << "\n" << sortedToChars(sorted) << endl; 
-	
 			write(PIPE_WRITE, sortedToChars(sorted), PIPE_BUF);
 		} else {
 			write(PIPE_WRITE, NULL, PIPE_BUF);
@@ -245,128 +275,8 @@ void forkChildSorter(const int & PIPE_WRITE) {
 	}
 }
 
-// under construction
-void forkParentMergers(const int * pipe) {
-	int child_count = (files.size() > 1 ? 2 : 1);
-	
-	int pipefds[2];
-	int buf[PIPE_BUF];
-	
-	forkSubProcessesByType(child_count, SUB_CHILD_SORT, pipefds);
-	
-	//int buf[PIPE_BUF] = pipfds[1];
-	read(pipefds[0], buf, PIPE_BUF);
-	
-	// does not like pipefds for some reason
-	//write(pipe[1], pipefds[0], PIPE_BUF);
-}
-
-// under construction
-void forkChildSorter(const int * pipe) {
-	// FIXME: there is always 1 child process that is the same as it's parent.
-	cout << "Created sibling child sort process ID #" << getpid() << endl;
-	
-	// Pop a file off the file queue and sort the contents
-	//vector<int> sorted = readFile(popFile());
-	vector<int> sorted;
-	
-	readFile(popFile(), sorted);
-	string sortedString = "";
-	
-	// Convert vector to string (temporary)
-	for(vector<int>::size_type i = 0; i != sorted.size(); i++) {
-		stringstream ss;
-		ss << sorted[i];
-	
-		//sortedString += itoa(sorted[i]);
-		sortedString += ss.str() + ",";
-	}
-	
-	if(pipe[1]) {
-		cout << "Writing output up pipe stream to parent from Child #" << getpid() << " - " << sortedString.c_str() << endl;
-		
-		write(pipe[1], sortedString.c_str(), PIPE_BUF);
-	}
-}
-
-// generic subprocess creator, under construction
-// must make the forkProcesses take in int * pipefds instead of a PIPE_WRITE
-void forkSubProcessesByType(int sp_count, int type, const int * parent_pipe) {
-	int fork_id;
-	
-	pid_t s_pids[sp_count];
-	
-	int pipefds[sp_count][2];
-	char buf[sp_count][PIPE_BUF];
-	
-	const int& PIPE_READ = pipefds[0][0];
-	const int& PIPE_WRITE = pipefds[0][1];
-
-	for(int i = 0; i < sp_count; i++)
-		pipe(pipefds[i]);
-	
-	fork_id = fork();
-		
-	if(fork_id < 0) {
-		perror("Unable to fork sub process\n");
-	}
-			
-	// Main process
-	else if(fork_id)
-	{
-		cout << "Forked process ID #" << fork_id << endl;
-
-		for(int i = 0; i < sp_count; i++)
-			read(pipefds[i][0], buf[i], PIPE_BUF);
-		
-		cout << "Parent #" << getpid() << " received sorted results from all child sub processes: " << buf[0] << endl;
-		
-		// merge sort
-		
-		write(parent_pipe[1], buf[0], PIPE_BUF);
-		
-		close(parent_pipe[0]);
-		close(parent_pipe[1]);
-	}
-	else if(!fork_id)
-	{
-		// close each open pipe[0]
-		
-
-		// *** http://stackoverflow.com/questions/876605/multiple-child-process
-
-		// Fork sub processes based on their type
-		for (int i = 0; i < sp_count; ++i) {
-			// close read-end of pipe since it will not be used
-			close(pipefds[i][0]);
-			
-			if ((s_pids[i] = fork()) < 0) {
-				perror("Could not fork sub process");
-			} else if (s_pids[i] == 0) {
-				switch(type) {
-					case SUB_PARENT_MERGE:
-						forkParentMergers(pipefds[i]);
-					break;
-					
-					case SUB_CHILD_SORT:
-						forkChildSorter(pipefds[i]);
-					break;
-				}
-				
-				exit(0);
-			}
-			
-			// close writte-end of pipe
-			close(pipefds[i][1]);
-		}
-
-		exit(0);
-	}
-}
-
+// Generic merge sort algorithm implementation
 vector<int> & mergeSort(vector<int> & data) {
-	// http://www.cplusplus.com/forum/beginner/27748/
-	
 	if(data.size() <= 1 )
 		return data;
 
@@ -387,72 +297,66 @@ vector<int> & mergeSort(vector<int> & data) {
 	return data;
 }
 
-void merge(vector<int> & arrayA, vector<int> & arrayB, vector<int> & original) {
-	unsigned int indexA = 0;
-	unsigned int indexB = 0;
-	unsigned int indexC = 0;
+// Generic merge sort algorithm implementation
+void merge(vector<int> & vector_a, vector<int> & vector_b, vector<int> & original) {
+	unsigned int index_a = 0;
+	unsigned int index_b = 0;
+	unsigned int index_c = 0;
 
-	while(indexA < arrayA.size() && indexB < arrayB.size()) {
-		if (arrayA[indexA] < arrayB[indexB]) {
-			original[indexC] = arrayA[indexA];
+	while(index_a < vector_a.size() && index_b < vector_b.size()) {
+		if (vector_a[index_a] < vector_b[index_b]) {
+			original[index_c] = vector_a[index_a];
 			
-			indexA++;
+			index_a++;
 		} else {
-			original[indexC] = arrayB[indexB];
+			original[index_c] = vector_b[index_b];
 			
-			indexB++;
+			index_b++;
 		}
 		
-        indexC++;
+        index_c++;
      }
      
-     while (indexA < arrayA.size()) {
-           original[indexC] = arrayA[indexA];
-           indexA++;
-           indexC++;
+     while (index_a < vector_a.size()) {
+           original[index_c] = vector_a[index_a];
+           
+           index_a++;
+           index_c++;
      }
      
-     while (indexB < arrayB.size())
-     {
-           original[indexC] = arrayB[indexB];
-           indexB++;
-           indexC++;
+     while (index_b < vector_b.size()) {
+           original[index_c] = vector_b[index_b];
+           
+           index_b++;
+           index_c++;
      }
-}
-
-//void mergeSortedCharsNoDupes(vector<int> & a, vector<int> & b) {
-void mergeSortedCharsNoDupes(string a, string b) {
-	//a.insert( a.end(), b.begin(), b.end() );
-	
-	//if(
 }
 
 const char * popFile() {
 	const char * filename = files[files.size() - 1];
 	
-	// remove the file we just pulled so other threads don't process the same files
+	// Remove the file we just pulled so other threads don't process the same files
 	// NOT SYNCHRONIZING!
 	files.pop_back();
 	
 	return filename;
 }
 
+// Convert sorted numbers into a string of characters
 const char * sortedToChars(vector<int> & numbers) {
 	string sortedString = "";
 	
-	// Convert vector to string (temporary)
 	for(vector<int>::size_type i = 0; i != numbers.size(); i++) {
 		stringstream ss;
 		ss << numbers[i];
 	
-		//sortedString += itoa(sorted[i]);
 		sortedString += ss.str() + " ";
 	}
 	
 	return sortedString.c_str();
 }
 
-// could use global variable instead throwing around vectors
+// Converts sorted chars seperated by a space into a vector
 vector<int> charsToSorted(const char * numbers) {
 	vector<int> numbers_vec;
 	string s = string(numbers); 
@@ -466,14 +370,8 @@ vector<int> charsToSorted(const char * numbers) {
     return numbers_vec;
 }
 
-// void saveSortedFile()
-
 void sigHandler(int sig) {
 	cout << "Exiting" << endl;
 	
 	exit(0);
-}
-
-void updateStatus(const char* status) {
-	cout << "Action - " << status << endl;
 }
