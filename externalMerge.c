@@ -26,7 +26,6 @@ void merge(vector<int> &, vector<int> &, vector <int> &);
 const char * sortedToChars(vector<int> &);
 vector<int> charsToSorted(const char *);
 
-void closePipe(int (*)) ;
 void sigHandler(int);
 
 vector<const char*> files;
