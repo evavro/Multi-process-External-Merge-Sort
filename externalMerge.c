@@ -115,6 +115,7 @@ void saveSortedFile(vector<int> & numbers) {
 	file.open(filename, ios::out);
 
 	if(file.is_open()) {
+		
 		// Add a number from the sorted list on a line
 		for(unsigned int i = 0; i < numbers.size(); i++)
 			file << numbers[i] << endl;
@@ -219,8 +220,6 @@ void forkParentMergers() {
 }
 
 // Forks off and manages at most 2 children sorting processes.
-// TAKE IN AN ARRAY OF FILES
-//void forkChildSorters(const int & PARENT_PIPE_WRITE) {
 void forkChildSorters(const int & PARENT_PIPE_WRITE, vector<const char *> & files_to_process) {
 	
 	// If there are at least 2 more files to parse, then count 2. Otherwise, only 1 remains
@@ -283,7 +282,7 @@ void forkChildSorters(const int & PARENT_PIPE_WRITE, vector<const char *> & file
 	write(PARENT_PIPE_WRITE, sorted_children_s.c_str(), PIPE_BUF);
 }
 
-// Process that opens a file, parses it, sorts it, and sends the result up to a respective parent process.
+// Process that opens a file, parses it, sorts it, and sends the result up to the respective parent process.
 void leafChildSortProcess(const int & PIPE_WRITE, const char * filename) {
 	cout << "Created child sort process #" << getpid() << endl;
 
@@ -302,7 +301,7 @@ void leafChildSortProcess(const int & PIPE_WRITE, const char * filename) {
 	}
 }
 
-// Generic merge sort algorithm implementation
+// Generic merge sort algorithm implementation using vectors
 vector<int> & mergeSort(vector<int> & data) {
 	if(data.size() <= 1)
 		return data;
@@ -324,7 +323,7 @@ vector<int> & mergeSort(vector<int> & data) {
 	return data;
 }
 
-// Generic merge sort algorithm implementation
+// Generic merge sort algorithm implementation using vectors
 void merge(vector<int> & vector_a, vector<int> & vector_b, vector<int> & original) {
 	unsigned int index_a = 0;
 	unsigned int index_b = 0;
